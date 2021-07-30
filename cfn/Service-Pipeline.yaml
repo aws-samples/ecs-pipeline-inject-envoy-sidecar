@@ -1,0 +1,478 @@
+Description: CI/CD pipeline for ECS service.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  ServiceName:
+    Type: String
+
+Outputs:
+  SourceRepoCloneUrlHttp:
+    Value: !GetAtt CodeCommitRepository.CloneUrlHttp
+  PipelineUrl:
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${Pipeline}
+  ArtifactBucket:
+    Value: !Ref ArtifactBucket
+  VirtualRouterName:
+    Value: !GetAtt VirtualRouter.VirtualRouterName
+  LogGroupName:
+    Value:
+      Fn::ImportValue: !Sub "${EnvironmentName}:ClusterLogGroup"
+
+
+Resources:
+
+### Mesh resources
+
+# Virtual service and routee
+
+  VirtualRouter:
+    Type: AWS::AppMesh::VirtualRouter
+    Properties: 
+      MeshName:
+        Fn::ImportValue: !Sub ${EnvironmentName}:MeshName
+      Spec: 
+        Listeners:
+        - PortMapping:
+            Port: 80
+            Protocol: http
+      VirtualRouterName: !Sub vr-${ServiceName}
+
+
+  VirtualService:
+    Type: AWS::AppMesh::VirtualService
+    Properties:
+      MeshName:
+        Fn::ImportValue: !Sub ${EnvironmentName}:MeshName
+      VirtualServiceName: !Sub ${ServiceName}.${EnvironmentName}.local
+      Spec:
+        Provider:
+          VirtualRouter: 
+            VirtualRouterName: !GetAtt VirtualRouter.VirtualRouterName
+
+# Create a bogus service discovery entry for the  virtual service.
+# This is needed because AppMesh needs the virtual service name that is referenced
+# by the invoking downstream application to be a resolvable name, even though Envoy will
+# replace the target address.
+
+  ServiceDiscoveryService:
+    Type: 'AWS::ServiceDiscovery::Service'
+    Properties:
+      Name: !Ref ServiceName
+      DnsConfig:
+        NamespaceId:
+          Fn::ImportValue: !Sub "${EnvironmentName}:ServiceDiscoveryNamespaceId"
+        DnsRecords:
+          - Type: A
+            TTL: 20
+
+  ServiceDiscoveryInstance:
+    DependsOn: ServiceDiscoveryService
+    Type: AWS::ServiceDiscovery::Instance
+    Properties:
+      InstanceAttributes:
+        AWS_INSTANCE_IPV4: 1.1.1.1
+      ServiceId: !GetAtt ServiceDiscoveryService.Id
+
+
+### Pipeline
+
+# CodePipeline Artifact bucket
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    # Properties:
+    #   BucketName: !Sub "${EnvironmentName}-${ServiceName}-codepipeline"
+    DeletionPolicy: Retain
+
+# Code Commit repo for service manifest files
+
+  CodeCommitRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Sub "${ServiceName}-cfg"
+    DeletionPolicy: Delete
+
+# Event rule to trigger pipeline from repo
+
+  TriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [events.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+        - PolicyName: !Sub start-pipeline-execution-${AWS::Region}-${ServiceName}
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action: "codepipeline:StartPipelineExecution"
+              Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+
+  CodeCommitRepoTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger the pipeline on change to repo/branch
+      EventPattern:
+        source:
+          - "aws.codecommit"
+        detail-type:
+          - "CodeCommit Repository State Change"
+        resources:
+          - !GetAtt CodeCommitRepository.Arn
+        detail:
+          event:
+            - "referenceCreated"
+            - "referenceUpdated"
+          referenceType:
+            - "branch"
+          referenceName:
+            - "master"
+      RoleArn: !GetAtt TriggerRole.Arn
+      State: ENABLED
+      Targets: 
+        - Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+          Id: !Sub codepipeline-${ServiceName}-pipeline
+          RoleArn: !GetAtt TriggerRole.Arn
+
+#####################
+# CodeBuild project #
+#####################
+
+# CodeBuild IAM Role
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Delete
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "codebuild.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ecr:GetAuthorizationToken
+              - Resource: !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+              - Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                  - ecs:CreateService
+                  - elbv2:CreateTargetGroup
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                - Fn::ImportValue: !Sub ${EnvironmentName}:TaskExecutionRoleArn
+                - Fn::ImportValue: !Sub ${EnvironmentName}:DefaultTaskIamRoleArn
+              - Effect: Allow
+                Action:
+                  - "ec2:Describe*"
+                Resource: "*"
+
+# CodeBuild Project
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: [ CodeBuildServiceRole ]
+    Properties:
+      Name: !Sub "${EnvironmentName}-${ServiceName}"
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL   #BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:5.0
+        Type: "LINUX_CONTAINER"
+        EnvironmentVariables:
+          - Name: ENVIRONMENT_NAME
+            Value: !Ref EnvironmentName
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_REGION
+            Value: !Ref AWS::Region
+          - Name: CLUSTER_NAME
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:ClusterName
+          - Name: TASK_EXEC_ROLE_ARN
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:TaskExecutionRoleArn
+          - Name: TASK_ROLE_ARN
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:DefaultTaskIamRoleArn
+          - Name: SERVICE_NAME
+            Value: !Ref ServiceName
+          - Name: NAMESPACE_ID
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:ServiceDiscoveryNamespaceId
+          - Name: NAMESPACE_ARN
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:ServiceDiscoveryNamespaceArn
+          - Name: NAMESPACE_NAME
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:ServiceDiscoveryNamespaceName
+          - Name: ENVOY_IMAGE_URI
+            Value:
+              Fn::ImportValue: !Sub ${EnvironmentName}:EnvoyImage
+          - Name: LOG_GROUP_NAME
+            Value:
+              Fn::ImportValue: !Sub "${EnvironmentName}:ClusterLogGroup"
+          - Name: VPC_ID
+            Value:
+              Fn::ImportValue: !Sub "${EnvironmentName}:VpcId"
+          - Name: VPC_SUBNET_ONE
+            Value:
+              Fn::ImportValue: !Sub "${EnvironmentName}:PrivateSubnetOne"
+          - Name: VPC_SUBNET_TWO
+            Value:
+              Fn::ImportValue: !Sub "${EnvironmentName}:PrivateSubnetTwo"
+          - Name: SECURITY_GROUP_ID
+            Value:
+              Fn::ImportValue: !Sub "${EnvironmentName}:ContainerSecurityGroup"
+      ServiceRole: !Ref CodeBuildServiceRole
+      Artifacts:
+        Type: "CODEPIPELINE"
+      Source:
+        Type: "CODEPIPELINE"
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 14.x
+            build:
+              commands:
+                - cp $CODEBUILD_SRC_DIR_ConfigOutput/manifest.yaml ${CODEBUILD_SRC_DIR}/cdk-build-service
+                - cd ${CODEBUILD_SRC_DIR}/cdk-build-service
+                - npm install
+                - npm run cdk synth
+            post_build:
+              commands:
+                - printenv
+                - echo Build completed on `date`
+          artifacts:
+            files:
+              - cdk-build-service/cdk.out/CdkBuildServiceStack.template.json
+
+
+
+##################
+# CloudFormation #
+##################
+
+# CloudFormation execution role
+
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Delete
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "cloudformation.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - ecs:*
+                  - ecr:*
+                  - application-autoscaling:*
+                  - iam:*
+                  - appmesh:*
+                  - logs:*
+                  - elasticloadbalancing:CreateTargetGroup
+                  - elasticloadbalancing:DeleteTargetGroup
+                  - elasticloadbalancing:CreateRule
+                  - elasticloadbalancing:DeleteRule
+                  - elasticloadbalancing:DescribeRules
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetGroupAttributes
+                  - elasticloadbalancing:ModifyRule
+                  - elasticloadbalancing:ModifyTargetGroup
+                  - elasticloadbalancing:ModifyTargetGroupAttributes
+                  - elasticloadbalancing:SetRulePriorities
+                  - elasticloadbalancing:AddTags
+                  - elasticloadbalancing:RemoveTags
+                  - servicediscovery:CreateService
+                  - servicediscovery:GetService
+                  - servicediscovery:UpdateService
+                  - servicediscovery:DeleteService
+                  - servicediscovery:TagResource
+                  - cloudwatch:GetDashboard
+                  - cloudwatch:PutDashboard
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:DeleteDashboards
+
+
+
+################
+# CodePipeline #
+################
+
+# CodePipeline role
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Delete
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "codepipeline.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource:
+                  - !Sub
+                    - arn:aws:s3:::${BucketName}/*
+                    - BucketName:
+                        Fn::ImportValue: !Sub ${EnvironmentName}:BuildScriptBucketName
+                  - !Sub
+                    - arn:aws:s3:::${BucketName}
+                    - BucketName:
+                        Fn::ImportValue: !Sub ${EnvironmentName}:BuildScriptBucketName
+                                                
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+              - Resource:
+                  - !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - cloudformation:*
+                  - iam:PassRole
+                  - codecommit:CancelUploadArchive
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+
+
+### CodePipeline 
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn: [ CodePipelineServiceRole, CodeBuildProject ]
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      RestartExecutionOnUpdate: False
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Name:  !Sub "${EnvironmentName}-${ServiceName}-Pipeline"
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: ServiceConfig
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              Namespace: SourceConfigVariables
+              Configuration:
+                RepositoryName: !Sub ${ServiceName}-cfg
+                BranchName: master
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: ConfigOutput
+              RunOrder: 1
+            - Name: BuildScript
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              OutputArtifacts:
+                - Name: BuildScriptOutput
+              RunOrder: 1
+              Configuration:
+                S3Bucket:
+                  Fn::ImportValue: !Sub ${EnvironmentName}:BuildScriptBucketName
+                S3ObjectKey: cdk-build-service.zip
+                PollForSourceChanges: false
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+                PrimarySource: BuildScriptOutput
+                EnvironmentVariables: '[{"name":"CONFIG_COMMIT_ID","value":"#{SourceConfigVariables.CommitId}","type":"PLAINTEXT"}]'
+              InputArtifacts:
+                - Name: ConfigOutput
+                - Name: BuildScriptOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub "${EnvironmentName}-${ServiceName}-#{SourceConfigVariables.CommitId}"
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: BuildOutput::cdk-build-service/cdk.out/CdkBuildServiceStack.template.json
+                # TemplatePath: BuildOutput::service.yaml
+                # TemplateConfiguration: BuildOutput::config.json
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+

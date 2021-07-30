@@ -1,0 +1,14 @@
+Task:
+  Family: "hello-backend"
+  Cpu: 256
+  Memory: 512
+
+AppContainer:
+  Port: 80
+  Image: "wizriz/hello-backend:66f2a19"
+  HealthCheckPath: "/ping"
+  Command:
+    - "node"
+    - "server"
+    - "-g Hello"
+    - "-m Welcome to our world!"

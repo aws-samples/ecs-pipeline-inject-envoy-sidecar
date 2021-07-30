@@ -1,0 +1,18 @@
+Task:
+  Family: "hello-web"
+  Cpu: 256
+  Memory: 512
+
+AppContainer:
+  Image: "wizriz/hello-web:66f2a19"
+  Port: 80
+  HealthCheckPath: "/ping"
+  Command:
+    - "node"
+    - "server"
+    - "-b http://hello-backend.demo.local/data"
+
+VirtualNode:
+  Backends:
+    - "hello-backend.demo.local"
+

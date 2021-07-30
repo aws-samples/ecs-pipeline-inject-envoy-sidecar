@@ -1,0 +1,26 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates bucket to be used for service build automation. This is used as one of the sources into the service pipelines.
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: "A friendly environment name that will be used for namespacing all cluster resources. Example: staging, qa, or production"
+
+Resources:
+
+### Build script bucket
+  BuildScriptBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+    DeletionPolicy: Retain
+
+# These are the values output by the CloudFormation template. Be careful
+# about changing any of them, because of them are exported with specific
+# names so that the other task related CF templates can use them.
+Outputs:
+  BuildScriptBucketName:
+    Description: Bucket for storing service build automation scripts and templates
+    Value: !Ref BuildScriptBucket
+    Export:
+      Name: !Sub ${EnvironmentName}:BuildScriptBucketName

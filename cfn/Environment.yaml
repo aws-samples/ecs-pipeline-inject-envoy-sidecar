@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates complete platform environment including VPC, cluster, service discovery namespace and mesh with ingress.
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: "A friendly environment name that will be used for namespacing of all environment resources."
+
+
+
+Resources:
+
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+      TemplateURL: VPC-2AZ.yaml
+
+  ClusterStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+      TemplateURL: ECS-Cluster.yaml
+
+  MeshStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+      TemplateURL: Mesh-ECS-Ingress.yaml
+
+
+Outputs:
+  VpcId:
+    Description: The ID of the VPC that this stack is deployed in
+    Value: !GetAtt VPCStack.Outputs.VpcId
+  ClusterName:
+    Description: The name of the ECS cluster
+    Value: !GetAtt ClusterStack.Outputs.ClusterName
+  MeshName:
+    Value: !GetAtt MeshStack.Outputs.MeshName
