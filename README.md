@@ -221,7 +221,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM
 ```
 
-Once deployed, you can use the AWS CodePipeline console to see a visualization of each pipeline. You will see that both are in a failed state. The reason for this is that the source CodeCommit repos are still empty, and the CodeCommit source action therefore fails. This will be rectified as soon as you push service configuration files to the repo.
+Once deployed, you can use the AWS CodePipeline console to see a visualization of each pipeline. You will see that both are in a failed state. The reason for this is that the source CodeCommit repos are still empty, and the CodeCommit source action therefore fails. This will be rectified as soon as you push service configuration files to the repos.
 
 Following completion of these stack builds, your set up will be as shown below:
 
@@ -374,7 +374,7 @@ Following completion of these service deployments, your set up will now be as sh
 
 ![EnvironmentPipelinesServices](img/EnvironmentPipelinesServices.png)
 
-Note that there is no connection between the virtual souters and the virtual nodes, because routes have not been set up yet!
+Note that there is no connection between the virtual routers and the virtual nodes, because routes have not been set up yet!
 
 ## Step 4: Configure mesh routing
 
@@ -551,7 +551,7 @@ Once this reaches the deploy stage, you can check the status of the CloudFormati
 ```
 aws cloudformation describe-stacks --stack-name demo-hello-backend-$new_backend_commit_id
 ```
-**Note:** If you get a "Stack with id ... does not exist" error, then verify that the pipeline is in the deployment stage and try again.
+**Note:** If you get a "Stack with id ... does not exist" error, then verify that the *hello-backend* pipeline is in the deployment stage and try again.
 
 
 
