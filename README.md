@@ -7,13 +7,30 @@ The benefits of this approach are that:
 -	automation results in fewer errors, and
 -	platform teams can use the pipeline to implement any conventions and/or enforce any policies that they have adopted in relation to meshed services, such as where logs are stored.
 
-## Service Architecture
+## Application Architecture
 
-The sample uses AWS CloudFormation, the AWS Cloud Development Kit (CDK), and the AWS CLI to build an environment and service  pipelines for deploying a distributed `hello` application to Amazon ECS, with AWS App Mesh used to configure traffic routing. The service architecture is illustrated below:
+The sample uses AWS CloudFormation, the AWS Cloud Development Kit (CDK), and the AWS CLI to build an environment and service  pipelines for deploying a distributed `hello` application to Amazon ECS, with AWS App Mesh used to configure traffic routing.
+
+### Sample application
+
+The *hello* application consists of two services:
+-	*hello-web* is a front-end service which receives HTTP GET requests on the resource path `/hello/<name>`. Upon receiving a request, it retrieves some data from the hello-backend service, using the resource path `/data`. It then uses this data, in combination with the passed *name* parameter, to construct an HTML response.
+-	*hello-backend* is a service offering a REST API which responds to HTTP GET requests on the resource path `/data`, returning a JSON object comprising a greeting string and a message string.
+
+![Application Architecture](img/ApplicationArchECS.png)
+
+The diagram above shows how the hello application would typically be deployed in an ECS environment without using a service mesh. In this example, the *hello-web* service is exposed via an application load balancer (which acts as the ingress), and the *hello-backend* service is discoverable using the DNS name `hello-backend.demo.local`. The solid arrows denote the flow of HTTP request traffic, which moves from left to right.
+
+
+### Meshed service architecture
+
+For the purposes of this sample, the *hello* application is deployed in an ECS environment with AWS App Mesh. The “meshified” application architecture is shown below.
 
 ![Service Architecture](img/ServiceArchitecture.png)
 
-Users of the application send HTTP GET requests to an ingress load balancer with the path `/hello-service/hello/<name>`. The load balancer forwards these to an ingress proxy service, which routes them to a `hello-web` service with the path `hello/<name>`. This in turn invokes a `hello-backend` service with the path `/data` to retrieve a JSON object containing a greeting string and a message. `hello-web` uses this data, along with the supplied `<name>` to return an HTML page.
+In this architecture, additional resources are deployed in the ECS cluster itself, as well as in the App Mesh control plane. These are respectively depicted in the lower and upper halves of the architecture diagram. The dashed lines represent various associations between mesh components.
+
+Users of the application send HTTP GET requests to an ingress load balancer with the path `/hello-service/hello/<name>`. The load balancer forwards these to an ingress proxy service, which routes them to the `hello-web` service with the path `hello/<name>`. This in turn invokes a `hello-backend` service with the path `/data` to retrieve a JSON object containing a greeting string and a message. `hello-web` uses this data, along with the supplied `<name>` to return an HTML page.
 
 Communication between the service components is managed using AWS App Mesh. The ingress proxy service is represented by a virtual gateway, while `hello-web` and `hello-backend` are each represented by a virtual service.
 
