@@ -558,7 +558,7 @@ git push
 
 Retrieve and store the latest commit id:
 ```
-new_backend_commit_id=$(git log --format="%H" -n 1)
+new_backend_commit_id=$(git log --format="%H" -n 1 | cut -b 1-8)
 echo $new_backend_commit_id
 ```
 
@@ -570,7 +570,12 @@ aws cloudformation describe-stacks --stack-name demo-hello-backend-$new_backend_
 ```
 **Note:** If you get a "Stack with id ... does not exist" error, then verify that the *hello-backend* pipeline is in the deployment stage and try again.
 
-
+Alternatively use:
+```
+aws cloudformation wait stack-create-complete \
+  --stack-name demo-hello-backend-$new_backend_commit_id
+```
+to wait for stack completion.
 
 ## Step 7: Canary testing
 
@@ -747,6 +752,7 @@ build_script_bucket=$(aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='BuildScriptBucketName'].OutputValue" \
   --output text \
 )
+aws s3 rm s3://$build_script_bucket/cdk-build-service.zip
 aws s3api list-object-versions \
   --bucket $build_script_bucket \
   --prefix cdk-build-service.zip \
