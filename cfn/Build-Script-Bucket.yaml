@@ -13,7 +13,7 @@ Resources:
     Properties:
       VersioningConfiguration:
         Status: Enabled
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
 
 # These are the values output by the CloudFormation template. Be careful
 # about changing any of them, because of them are exported with specific

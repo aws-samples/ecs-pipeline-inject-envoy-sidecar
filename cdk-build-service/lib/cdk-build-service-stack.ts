@@ -122,7 +122,9 @@ export class CdkBuildServiceStack extends cdk.Stack {
       cdk.Annotations.of(scope).addError("Invalid task role arn");
     }
 
-    const ecsServiceName = serviceName + "-" + commitId;
+    const versionId = commitId.substring(0,8); // Use first 8 chars of commitId as version
+
+    const ecsServiceName = serviceName + "-" + versionId;
 
     const appPort = manifest?.AppContainer?.Port ?? 80;
 

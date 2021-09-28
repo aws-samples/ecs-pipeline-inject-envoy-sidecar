@@ -417,9 +417,9 @@ As this is a first deployment of each of these services i.e. there is no prior v
 
 To set up routing for these services, first use the git *CommitId* to identify the virtual nodes created by the service pipelines:
 ```
-web_commit_id=$(git ls-remote $web_repo_url HEAD | cut -f 1)
+web_commit_id=$(git ls-remote $web_repo_url HEAD | cut -f 1 | cut -b 1-8)
 web_vn=vn-hello-web-$web_commit_id
-backend_commit_id=$(git ls-remote $backend_repo_url HEAD | cut -f 1)
+backend_commit_id=$(git ls-remote $backend_repo_url HEAD | cut -f 1 | cut -b 1-8 )
 backend_vn=vn-hello-backend-$backend_commit_id
 ```
 
@@ -730,7 +730,15 @@ build_script_bucket=$(aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='BuildScriptBucketName'].OutputValue" \
   --output text \
 )
-aws s3 rm s3://$build_script_bucket/cdk-build-service.zip
+aws s3api list-object-versions \
+  --bucket $build_script_bucket \
+  --prefix cdk-build-service.zip \
+  --query "[Versions[*].VersionId,DeleteMarkers[*].VersionId]" \
+  --output text \
+| xargs -n1 aws s3api delete-object \
+  --bucket $build_script_bucket \
+  --key cdk-build-service.zip \
+  --version-id
 aws cloudformation delete-stack --stack-name demo-build-script-bucket
 ```
 

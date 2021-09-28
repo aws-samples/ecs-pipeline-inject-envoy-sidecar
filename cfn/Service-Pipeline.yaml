@@ -255,6 +255,9 @@ Resources:
         Type: "CODEPIPELINE"
         BuildSpec: |
           version: 0.2
+          env:
+            exported-variables:
+              - VersionId
           phases:
             install:
               runtime-versions:
@@ -267,6 +270,7 @@ Resources:
                 - npm run cdk synth
             post_build:
               commands:
+                - export VersionId=$(echo ${CONFIG_COMMIT_ID} | cut -b 1-8)
                 - printenv
                 - echo Build completed on `date`
           artifacts:
@@ -455,6 +459,7 @@ Resources:
                 - Name: BuildScriptOutput
               OutputArtifacts:
                 - Name: BuildOutput
+              Namespace: BuildVariables
               RunOrder: 1
         - Name: Deploy
           Actions:
@@ -466,7 +471,7 @@ Resources:
                 Provider: CloudFormation
               Configuration:
                 ActionMode: CREATE_UPDATE
-                StackName: !Sub "${EnvironmentName}-${ServiceName}-#{SourceConfigVariables.CommitId}"
+                StackName: !Sub "${EnvironmentName}-${ServiceName}-#{BuildVariables.VersionId}"
                 Capabilities: CAPABILITY_NAMED_IAM
                 TemplatePath: BuildOutput::cdk-build-service/cdk.out/CdkBuildServiceStack.template.json
                 # TemplatePath: BuildOutput::service.yaml
