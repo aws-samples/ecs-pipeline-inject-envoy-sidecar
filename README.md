@@ -148,14 +148,14 @@ The following steps can subsequently be used to demonstrate the introduction of 
 ## Pre-requisites
 
 To build this demo, you will need:
-* Access to AWS account with suitable permissions. **Note:** For experimental purposes you can use `Administrator` permissions, but this should not be done in production solutions.
+* Access to an AWS account with suitable permissions. **Note:** For experimental purposes you can use `Administrator` permissions, but this should not be done in production solutions.
 * Access to the following tools:
   * bash
   * AWS CLI
   * git (set up for use with CodeCommit)
   * curl
   * docker (optional - only required if you want to build the application images yourself to avoid dockerhub throttling)
-An easy way to satisfy the tools requirement is to use AWS Cloud9. All tools are pre-installed, wtih the exception of `jq` which can be installed with `sudo yum install jq`.
+An easy way to satisfy the tools requirement is to use AWS Cloud9, which comes with all the above pre-installed.
 
 ## Clone this repo
 
@@ -163,15 +163,18 @@ Working in a suitable directory, clone the code sample repo as follows:
 ```
 git clone https://github.com/aws-samples/ecs-pipeline-inject-envoy-sidecar.git
 ```
+
 ## Set the INSTALL_DIR
 
-For easy reference, set the variable INSTALL_DIR to wherever you clone this repo.
+For easy reference, set the variable INSTALL_DIR to the directory where you cloned this repo, and then change to this directory.
 ```
 INSTALL_DIR=<path-to-local-repo>
 cd $INSTALL_DIR
 ```
 
 ## Step 1: Create mesh environment
+
+The directory $INSTALL_DIR/cfn contains a number of CloudFormation templates that you can use to build your environment and service pipelines.
 
 Create a mesh environment using the supplied template as shown below.
 ```
@@ -183,15 +186,14 @@ aws cloudformation deploy \
 ```
 
 This stack creates an environment comprising:
-- a VPC with 2 public subnets and 2 private subnets with NAT Gateways,
-- an ECS cluster (no container instances are created, as AWS Fargate will be used to run all services)
-- a service discovery namespace
-- a log group
-- an App Mesh service mesh
-- an ingress service in ECS (Envoy proxy), fronted by a network load balancer, and with an associated virtual gateway in the mesh.
+- a VPC with 2 public subnets and 2 private subnets in 2 AZs, and a NAT Gateway;
+- an ECS cluster (no container instances are created, as AWS Fargate will be used to run all services);
+- an App Mesh service mesh;
+- an ingress service in ECS (Envoy proxy), fronted by a network load balancer, and with an associated virtual gateway in the mesh;
+ - other resources e.g. service discovery namespace, log group and IAM roles.
 
 
-Following completion of this stack build, you will have an environment as shown below:
+Following completion of this stack build, you will have an environment as shown below (VPC and subnets not shown):
 
 ![Environment](img/Environment.png)
 
@@ -209,7 +211,7 @@ aws cloudformation deploy \
   --parameter-overrides "EnvironmentName=demo"
 ```
 
-The service build script files are in $INSTALL_DIR/cdk-build-service. Zip and upload them to the bucket as follows:
+The service build script files are in `$INSTALL_DIR/cdk-build-service`. Zip and upload them to the bucket as follows:
 ```
 cd $INSTALL_DIR
 zip -r cdk-build-service.zip cdk-build-service/*
@@ -223,14 +225,20 @@ aws s3 cp cdk-build-service.zip s3://$build_script_bucket
 
 ### Step 2.2: Create virtual services and service pipelines from a common template
 
-The file `cfn/Service-Pipeline.yaml`  contains a template for creating a service pipeline, along with a virtual service and virtual router, for a service. You can use this to create a pipeline, virtual service and virtual router for each of `hello-web` and `hello-backend` services. These stacks can be created simultaneously as follows:
+The file `cfn/Service-Pipeline.yaml`  contains a template for creating a service pipeline, along with a virtual service and virtual router, for a service. You can use this to create a pipeline, virtual service and virtual router for each of the `hello-web` and `hello-backend` services.
+
+To create the service pipeline stack for `hello-web` use:
 ```
 cd $INSTALL_DIR
 aws cloudformation deploy \
   --stack-name hello-web-pipeline \
   --template-file cfn/Service-Pipeline.yaml \
   --parameter-overrides "EnvironmentName=demo" "ServiceName=hello-web" \
-  --capabilities CAPABILITY_IAM &
+  --capabilities CAPABILITY_IAM
+```
+
+Similarly, to create the service pipeline stack for `hello-backend` use:
+```
 aws cloudformation deploy \
   --stack-name hello-backend-pipeline \
   --template-file cfn/Service-Pipeline.yaml \
@@ -238,7 +246,9 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM
 ```
 
-Once deployed, you can use the AWS CodePipeline console to see a visualization of each pipeline. You will see that both are in a failed state. The reason for this is that the source CodeCommit repos are still empty, and the CodeCommit source action therefore fails. This will be rectified as soon as you push service configuration files to the repos.
+**Note:** The two service pipeline stacks can (optionally) be created concurrently to speed things up.
+
+Once deployed, you can use the [AWS CodePipeline console](https://console.aws.amazon.com/codepipeline/) to see a visualization of each pipeline. You will see that both are in a failed state. The reason for this is that the source CodeCommit repos are still empty, and the CodeCommit source action therefore fails. This will be rectified as soon as you push service configuration files to the repos.
 
 Following completion of these stack builds, your set up will be as shown below:
 
@@ -269,40 +279,58 @@ git clone https://github.com/rizblie/docker-tiered-hello.git
 cd docker-tiered-hello
 ```
 
-Get *docker* to log in to ECR:
+Fetch AWS account ID and region:
 ```
-$(aws ecr get-login --no-include-email)
+export AWS_REGION=$(aws configure get region)
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ```
 
-Build and push the `hello-web` image:
+Get *docker* to log in to ECR:
 ```
-cd hello-web
+aws ecr get-login-password \
+    --region $AWS_REGION \
+| docker login \
+    --username AWS \
+    --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+```
+
+Create an ECR repo for `hello-web`:
+```
 web_ecr_uri=$( \
     aws ecr create-repository \
         --repository-name hello-web \
         --query repository.repositoryUri \
         --output text \
 )
+```
+
+Build and push the `hello-web` image:
+```
+cd hello-web
 docker build -t hello-web:v1 .
 docker tag hello-web:v1 $web_ecr_uri:v1
 docker push $web_ecr_uri:v1
 ```
 
-Build and push the `hello-backend` image:
+Similarly, create an ECR repo for `hello-backend`:
 ```
-cd ../hello-backend
 backend_ecr_uri=$( \
     aws ecr create-repository \
         --repository-name hello-backend \
         --query repository.repositoryUri \
         --output text \
 )
+```
+
+Build and push the `hello-backend` image:
+```
+cd ../hello-backend
 docker build -t hello-backend:latest .
 docker tag hello-backend:v1 $backend_ecr_uri:v1
 docker push $backend_ecr_uri:v1
 ```
 
-Verify that your container images are in your ECR registry:
+Finally, verify that your container images are in your ECR registry:
 
 ```
 aws ecr list-images --repository-name hello-web
@@ -313,7 +341,7 @@ aws ecr list-images --repository-name hello-backend
 
 To trigger the *hello-web* service pipeline you need to push a service configuration into the associated CodeCommit repository.
 
-First, set up the git credential helper for CodeCommit as follows:
+First, set up the git credential helper for CodeCommit as follows (if you are using Cloud9 then this has already been set up for you):
 ```
 git config --global credential.helper '!aws codecommit credential-helper $@'
 git config --global credential.UseHttpPath true
@@ -326,7 +354,7 @@ git config --global user.name "Your Name"
 git config --global user.email you@example.com
 ```
 
-Clone the service git repo for *hello-web* and copy in the supplied service configuration files:
+Clone the service git repo for *hello-web* (from the *hello-web* service pipeline stack) and copy in the supplied service configuration files:
 ```
 web_repo_url=$(aws cloudformation describe-stacks \
   --stack-name hello-web-pipeline \
@@ -340,7 +368,7 @@ cp $INSTALL_DIR/svc/hello-web-cfg/* .
 ```
 
 The service configuration is set up to pull the application container image
-from *dockerhub* by default. If you are using ECR then edit `manifest.yaml` and replace the *AppContainer.Image* name with the output of:
+from *dockerhub* by default. If you are using ECR then edit `manifest.yaml` and replace the *AppContainer.Image* name with the ECR URI, which you can obtain using:
 
 ```
 echo $web_ecr_uri:v1
@@ -355,7 +383,7 @@ git push
 
 This triggers the service pipeline for *hello-web*. You can monitor the progress of the pipeline using the AWS CodePipeline console.
 
-Repeat the same steps for the `hello-backend` service. Start by cloning the git repo from the `hello-backend` service pipeline and copy the supplied manifest file:
+Repeat the same steps for the `hello-backend` service. Start by cloning the git repo from the `hello-backend` service pipeline stack and copy the supplied manifest file:
 ```
 backend_repo_url=$(aws cloudformation describe-stacks \
   --stack-name hello-backend-pipeline \
@@ -368,8 +396,8 @@ cd hello-backend-cfg
 cp $INSTALL_DIR/svc/hello-backend-cfg/* .
 ```
 
-The service configuration is set up to pull the application container image
-from *dockerhub* by default. If you are using ECR then edit `manifest.yaml` and replace the *AppContainer.Image* image  with the output of:
+As before, the service configuration is set up to pull the application container image
+from *dockerhub* by default. If you are using ECR then edit `manifest.yaml` and replace the *AppContainer.Image* image with the ECR URI, which you can obtain using:
 
 ```
 echo $backend_ecr_uri:v1
@@ -385,7 +413,8 @@ git push
 
 ### Step 3.3: Wait for service deployment to complete
 
-Monitor the deployment of the services via the AWS CodePipeline console, and wait until they are up and running (you can use the ECS console to do this).
+Monitor the deployment of the services via the [AWS CodePipeline console](https://console.aws.amazon.com/codepipeline/), and wait until they are up and running. This should take around 4 minutes. You can use the [ECS console](https://console.aws.amazon.com/ecs/) to verify that the 
+services are running.
 
 Following completion of these service deployments, your set up will now be as shown below:
 
@@ -399,7 +428,7 @@ At this point the ECS cluster is running three ECS services: the *ingress* servi
 
 ## Step 4.1: Configure virtual gateway routing
 
-The *ingress* service is associated with a virtual gateway (*vg-ingress*) in the mesh. This needs to be configured to route traffic to the *hello-web.demo.local* virtual service.
+The *ingress* service is associated with a virtual gateway (*vg-ingress*) in the mesh. This needs to be configured to route traffic to the *hello-web.demo.local* virtual service, as follows:
 
 ```
 cd $WORK_DIR
@@ -440,7 +469,7 @@ backend_commit_id=$(git ls-remote $backend_repo_url HEAD | cut -f 1 | cut -b 1-8
 backend_vn=vn-hello-backend-$backend_commit_id
 ```
 
-Set up route for the *hello-web* service:
+Next, set up a route for the *hello-web* service as follows:
 ```
 cat <<EoF >r-hello-web.json
 {
@@ -469,7 +498,7 @@ aws appmesh create-route \
 ```
 
 
-Set up route for the *hello-backend* service:
+Similarly, set up a route for the *hello-backend* service as follows:
 ```
 cat <<EoF >r-hello-backend.json
 {
@@ -497,6 +526,8 @@ aws appmesh create-route \
   --spec file://r-hello-backend.json
 ```
 
+**Note:** Optionally, you can use the [AWS App Mesh console](https://console.aws.amazon.com/appmesh/) to explore the various mesh resources that have been created. You will need to periodically hit the refresh button on the console to see the latest view of resources as they are created. 
+
 ## Step 5: Test the application
 
 Obtain the URL for the load balancer:
@@ -523,6 +554,8 @@ Congratulations, at this point you have a working meshed application!
 The remainder of this walkthrough shows how you can deploy a new version of the *hello-backend* service alongside the existing version, and then set up canary routing.
 
 ## Step 6: Deploy a new version of the backend service configuration
+
+You will use the *backend-service* pipeline to deploy a new version of the service that supplies different data values.
 
 Switch to the local repo for the backend service configuration:
 ```
@@ -562,20 +595,15 @@ new_backend_commit_id=$(git log --format="%H" -n 1 | cut -b 1-8)
 echo $new_backend_commit_id
 ```
 
-Wait for the new version of the service to be deloyed. You can do this by monitoring the AWS CodePipeline console.
+Wait for the new version of the service to be deloyed. You can do this by monitoring the [AWS CodePipeline console](https://console.aws.amazon.com/codepipeline/).
 
-Once this reaches the deploy stage, you can check the status of the CloudFormation stack deployment via the CloudFormation console, or the CLI using:
-```
-aws cloudformation describe-stacks --stack-name demo-hello-backend-$new_backend_commit_id
-```
-**Note:** If you get a "Stack with id ... does not exist" error, then verify that the *hello-backend* pipeline is in the deployment stage and try again.
-
-Alternatively use:
+Once this reaches the deploy stage, you can wait for completion of the CloudFormation stack deployment via the CloudFormation console, or the CLI using:
 ```
 aws cloudformation wait stack-create-complete \
   --stack-name demo-hello-backend-$new_backend_commit_id
 ```
-to wait for stack completion.
+**Note:** If using the CLI, this command will return an error if the pipeline has not yet reached the deploy stage. If this happens, wait for the deploy stage to be entered and run again.
+
 
 ## Step 7: Canary testing
 
@@ -639,7 +667,7 @@ Repeatedly use `curl` to access the URL:
 ```
 while sleep 1; do curl $ingress_url/hello-service/hello/Bob ; echo ""; done
 ```
-You should see that 1 in 10 responses have the new greeting and message. Hit *Ctrl-C* when done.
+You should see that approximately 1 in 10 responses have the new greeting and message. Hit *Ctrl-C* when done.
 
 
 ## Step 8: Adjust routing to switch to new version, and re-test
@@ -674,13 +702,13 @@ aws appmesh update-route \
   --spec file://r-hello-backend-3.json
 ```
 
-Test by repeatedly using curl to access the URL:
+Once again, you can test by repeatedly using `curl` to access the URL:
 
 ```
 while sleep 1; do curl $ingress_url/hello-service/hello/Bob ; echo ""; done
 ```
 
-You should now see that all responses have the new greeting and message. Hit *Ctrl-C* when done.
+This time, you should see that *all* responses have the new greeting and message. Hit *Ctrl-C* when done.
 
 ## Step 9: Delete old version
 
@@ -691,9 +719,7 @@ aws cloudformation delete-stack --stack-name demo-hello-backend-$backend_commit_
 ```
 
 
-
-
-# Cleanup
+# Clean up
 
 To avoid any unexpected charges, don’t forget to clean up resources once you have finished experimenting with the demo application! 
 
@@ -775,7 +801,7 @@ aws ecr delete-repository --force --repository-name hello-backend
 
 ## Delete mesh environment
 
-Delete the mesh environment:
+Delete the mesh and associated mesh resources:
 ```
 aws cloudformation delete-stack --stack-name demo-env
 ```
